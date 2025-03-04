@@ -102,8 +102,8 @@ We need to mount filesystems under each implementation (if possible) and compare
 It is my strong suspicion that whatever the actual limits, the actual performance limitation will come from the service throttles (as it appears to under NFSv3 now) rather than any intrinsic capability.
 
 We are currently using the in-tree NFS storage provisioner.
-That does not directly support NFSv4, but it might if `/etc/nfsmount.conf` is configured to request `vers=4.1`.
-It is certainly the case that a helm-templated ConfigMap to populate `/etc/nfsmount.conf` would be less work than dealing with a CSI, a custom StorageClass, and provisioning and deprovisioning PVs directly.
+That does not directly support NFSv4~~, but it might if `/etc/nfsmount.conf` is configured to request `vers=4.1`~~.
+~~It is certainly the case that a helm-templated ConfigMap to populate `/etc/nfsmount.conf` would be less work than dealing with a CSI, a custom StorageClass, and provisioning and deprovisioning PVs directly.~~
 If we are willing to go to a different CSI (and thus worry about provisioning PVs and then PVCs atop them), then we will be able to use NFSv4.
 This was the approach we took at NCSA, and it was workable, albeit inconvenient and slightly fragile.
 Given the much more methodical way we are handling container spawn now as compared to then (standalone controller providing spawn methods, rather than shoehorning a bunch of stuff into KubeSpawner) it should be less difficult and less fragile this time around.
