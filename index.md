@@ -20,13 +20,11 @@ This is our attempt to document functionality and performance considerations whi
 We did a fair bit of performance testing using https://github.com/lsst-sqre/fs-vs-netapp .
 The output of the [IOZone](https:www.iozone.org) benchmarking tool can be found in that repository, as can a notebook that generates some fairly understandable graphs from it.
 
-Some of those will be reproduced here.
-However, in general, because the graphs are not just static plots, but rich [plotly](https://plotly.com) Javascript objects, rendering that notebook's output to static graphics has proven difficult.
-Hence the screenshots you will find in this document.
+Because the graphs are not just static plots, but rich [plotly](https://plotly.com) Javascript objects, rendering that notebook's output to static graphics has proven difficult.
 
 ### Summary
 
-It performs as expected.  Notably, once you get data large enough to exhaust the cache on the Kubernetes container, and files sufficiently large that it is in fact the transfer and not the open/close/metadata manipulation that dominates the time, you run into the defined service limits.
+NFSv3 performs as expected.  Notably, once you get data large enough to exhaust the cache on the Kubernetes container, and files sufficiently large that it is in fact the transfer and not the open/close/metadata manipulation that dominates the time, you run into the defined service limits.
 
 For NetApp we chose the `Premium` tier, as the closest approximation to the `BASIC_SSD` we're using with FileStore.
 FileStore `Zonal`, `Regional`, or `Enterprise` would be required to use NFSv4 with Filestore.
@@ -45,6 +43,55 @@ would require just as intrusive a migration as going to NetApp, that
 NetApp is not significantly more expensive, and that NetApp does support
 individual quotas and Filestore does not and likely never will, there
 doesn't seem to me to be much point in investigating NFSv4 Filestore further.
+
+## NFSv4
+
+We want to use NFSv4 in order to be able to represent all the groups a user may be in, rather than only the first 15, as we anticipate users may belong to many collaborations.
+NFSv4 can be used with NetApp (or with a higher tier of Filestore).
+It is not without its idiosyncrasies.
+
+### Kubernetes difficulties
+
+The problem lies mostly in the complexity of plumbing it through to the Kubernetes layer.
+For NFSv3, you can use the `nfs` volume type; Kubernetes then does magic behind the scenes to map the equivalent of `PersistentVolumes` (PVs) and `PersistentVolumeClaims` (PVCs) without the K8s administrator having to be aware of it.
+In fact, the `nfs` volume type will also work with NFSv4--this is what we are using at the T&S sites.
+The problem is that that requires changes on the Kubernetes nodes, in particular the creation of `/etc/nfsmount.conf` on each node forcing the NFS server to v4.
+Our GKE nodes are Container Operating System (COS) images.
+COS claims to support cloud-init, and those images claim that `/etc` is mutable.
+Thus, in principle, we could inject an appropriate `nfsmount.conf` onto each note.
+In practice, I could not find any way to specify a cloud-init server that the GKE nodes could consult at boot time.
+Obviously manual alteration of our nodes is a non-starter.
+
+### PVs and PVCs
+
+There is, however, a way to do NFSv4 without any additional support below the Kubernetes layer.
+Although you cannot specify mount options with the `nfs` volume type, if you create a `PersistentVolumeClaim` (PVC) and map it to a `PersistentVolume`, you can indeed specify mount options in the persistent volume.
+There are two drawbacks to this approach.
+The PV-to-PVC mapping is inherently one-to-one.
+Thus, we must create a PV and PVC pair for each distinct mount a pod wants to use.
+That brings us to the second drawback.
+The PVC, as with everything else in the RSP user pod model, is a namespace-scoped object.
+That means you don't have to delete it individually when you're done with a user lab; you just destroy the namespace and everything inside it will be cleaned up.
+A PV, however, is a cluster-scoped object.
+This means that you end up encoding the namespace in the PV name to keep it unique, and that you must track and destroy these objects separate from the rest of the Lab-or-fileserver resources.
+This introduces new complexity into the Nublado Controller and into the Safir Kubernetes test framework.
+This is the approach we took at NCSA, because they were unable to deliver an NFSv3 implementation that allowed correct file locking.
+It is somewhat fragile, although the Nublado Controller makes it far more reliable than trying to do it all within KubeSpawner as we did at NCSA.
+
+### Trident
+
+The [Trident](https://docs.netapp.com/us-en/trident/index.html) operator might be able to help with this.
+In particular, [sharing NFS volumes across namespaces](https://docs.netapp.com/us-en/trident/trident-use/volume-share.html) looks fairly promising.
+It is obviously doing the same sort of PV-PVC pair management, but if it hides that from the administrator, such that all we have to do is create a PVC for the user mounts and annotate them with the fileserver namespace for each one we want to expose via the fileserver, then maybe that's a workable solution.
+
+### NFS v4 performance
+
+Benchmarking was surprising.
+NFSv3 and NFSv4 feel roughly similar in terms of speed in interactive use.
+For large block sizes, the benchmarks agree pretty well.
+For small files, or small ranges of bytes manipulated, NFSv4 performance is dreadful, often 10% or less of the throughput of NFSv3.
+While this isn't apparent to the user (because the difference between e.g 2 and 20 milliseconds is not noticeable to a human, I suspect), it is something to consider, particularly as we have done no scale tests with file services.
+I don't know enough about NFS protocols (either v3 or v4) to know whether NFSv4 does a lot more per-action setup and teardown, but the numbers certainly suggests that it does.
 
 ## User Quota Support
 
@@ -71,42 +118,19 @@ There is another alternative--individual user home volumes.
 NetApp Volumes, with its Flex volume allocation and the Trident operator, would let us do that.
 That seems like overkill.
 
-### Default user quota support
+### Default and multi-volume quota support
 
 NetApp Volumes default user quota support works as advertised.
 This is really all we need to go to DP1, but we want something more sophisticated in the longer term.
 Nevertheless, it solves our largest problem.
 
-### Group Support
-
 NetApp Volumes have a limit of 100 quota rules per volume.
 Since we will have considerably more users than that, the naive approach of giving each user an independent quota cannot work.
-It seems likely to be the case that we will want more than 99 users who have something other than the default quota.
 
-It is not yet clear whether a `group` quota refers to the `group` as which a file is written or to the `group` to which the user belongs.
-Since NFS supports a list of user groups (historically short) we are hoping that it is the second, but experimentation is required.
-NFSv4 `AUTH_SYS` might require that our client-local groups also be known to the NetApp server, which in turn would require that, since we have no access to the local `/etc/group` file or moral equivalent, we end up with LDAP, possibly in conjunction with Kerberos, which all seems distressingly heavyweight.
-Filestore supports NFSv4, but only if we migrate to Zonal, Regional, or Enterprise storage tiers (we are currently on Basic SSD).
-NetApp certainly does.
+We believe that we can manage this by letting almost everyone use a default quota, combined with placing collaborations with large space requirements on their own volume (since volumes can be a minimum of 2TB, if we need a lot of space per user, we will almost certainly want more than 2TB in the volume).
 
-## NFS v3 vs v4
-
-NetApp can definitely run NFSv4.
-Filestore could if we moved to a more expensive (and featureful) storage tier.
-
-Simply because of the number-of-group restrictions (assuming that NFSv4
-is happy with a numerical list that it doesn't have to resolve), it is clear that NFSv4, all other things being equal, would be preferable.
-
-First and foremost among those things that might not be equal is performance.
-We need to mount filesystems under each implementation (if possible) and compare their throughput under benchmark tests.
-It is my strong suspicion that whatever the actual limits, the actual performance limitation will come from the service throttles (as it appears to under NFSv3 now) rather than any intrinsic capability.
-
-We are currently using the in-tree NFS storage provisioner.
-That does not directly support NFSv4~~, but it might if `/etc/nfsmount.conf` is configured to request `vers=4.1`~~.
-~~It is certainly the case that a helm-templated ConfigMap to populate `/etc/nfsmount.conf` would be less work than dealing with a CSI, a custom StorageClass, and provisioning and deprovisioning PVs directly.~~
-If we are willing to go to a different CSI (and thus worry about provisioning PVs and then PVCs atop them), then we will be able to use NFSv4.
-This was the approach we took at NCSA, and it was workable, albeit inconvenient and slightly fragile.
-Given the much more methodical way we are handling container spawn now as compared to then (standalone controller providing spawn methods, rather than shoehorning a bunch of stuff into KubeSpawner) it should be less difficult and less fragile this time around.
+We can still have up to 99 users per volume who are special snowflakes with larger quotas.
+I think we have some candidates in mind.
 
 ## Addendum
 
