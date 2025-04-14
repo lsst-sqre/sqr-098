@@ -22,6 +22,8 @@ The output of the [IOZone](https:www.iozone.org) benchmarking tool can be found 
 
 Because the graphs are not just static plots, but rich [plotly](https://plotly.com) Javascript objects, rendering that notebook's output to static graphics has proven difficult.
 
+So I redid the tests with [fio](https://github.com/axboe/fio/) and the plots in Matplotlib, and that let me export the notebook as PDF much more easily.
+
 ### Summary
 
 NFSv3 performs as expected.  Notably, once you get data large enough to exhaust the cache on the Kubernetes container, and files sufficiently large that it is in fact the transfer and not the open/close/metadata manipulation that dominates the time, you run into the defined service limits.
@@ -84,23 +86,30 @@ The [Trident](https://docs.netapp.com/us-en/trident/index.html) operator might b
 In particular, [sharing NFS volumes across namespaces](https://docs.netapp.com/us-en/trident/trident-use/volume-share.html) looks fairly promising.
 It is obviously doing the same sort of PV-PVC pair management, but if it hides that from the administrator, such that all we have to do is create a PVC for the user mounts and annotate them with the fileserver namespace for each one we want to expose via the fileserver, then maybe that's a workable solution.
 
+I've done some experiments with Trident, and it really doesn't want to be used the way we want to use it.
+That said, I may still be able to hammer it into shape. 
+While initial volume creation takes a lot longer, its ability to mirror PVCs to other namespaces might offset this.
+As of yet I haven't been able to make it respect `no_root_squash`.
+
 ### NFS v4 performance
 
-Benchmarking was surprising.
+Benchmarking was surprising under IOZone.
 NFSv3 and NFSv4 feel roughly similar in terms of speed in interactive use.
 For large block sizes, the benchmarks agree pretty well.
 For small files, or small ranges of bytes manipulated, NFSv4 performance is dreadful, often 10% or less of the throughput of NFSv3.
 While this isn't apparent to the user (because the difference between e.g 2 and 20 milliseconds is not noticeable to a human, I suspect), it is something to consider, particularly as we have done no scale tests with file services.
 I don't know enough about NFS protocols (either v3 or v4) to know whether NFSv4 does a lot more per-action setup and teardown, but the numbers certainly suggests that it does.
 
+I opened a support ticket with Google, that got referred to NetApp.  They confirmed that NFSv4 would have worse performance for small files, and especially for large numbers of small files.
+
+Indeed, when I repeated the IO benchmarking with `fio`, the difference between NFSv3 and NFSv4 was much smaller, and I think that is because `fio` uses one file per job and I intentionally serialized jobs.
+
 ## User Quota Support
 
-As it stands, if the volume that `/home` is on is full, no user fileservers will start, as RSP startup relies on being able to write files to user home space.
-This is obviously completely unacceptable along several orthogonal axes.
-The first thing to solve is to not refuse to start if the home directory is not writeable for some reason.
-I feel it is acceptable to refuse to start if the home directory does not exist or is not readable, but failure to write should not prevent Lab spawn.
+I have fixed the problem that the Lab will silently fail to start if its home directory cannot be written to; a little bit of Lab extension work has given us a modular dialog indicating the problem.
+We even try to take corrective action (by clearing caches) if we can.
 
-However, that then begs the question of why that space would not be writeable.
+Failure to write begs the question of why that space would not be writeable.
 At USDF this is usually because the directory ownership is wrong.
 At IDF (that is, Google Cloud), the directory ownership is never wrong, because we provision the filesystem on the user's first usage of it.
 There are some subtleties regarding file migration from users who have changed their IDF account, perhaps because they moved from one institution to another.
@@ -109,6 +118,7 @@ These are relatively rare, and for now can continue to be managed manually.
 The next reason the space could not be written is the one we're worried about.
 At the time of writing, all our remote storage is on a single volume--so it's not just a runaway process in a user's home directory that could break spawns for everyone--it's something that runs away in `/scratch` too!
 We will address that failure mode by separate volumes for `/home`, `/scratch`, and `/project`, at least in production.
+I have added Terraform support for NetApp Cloud Volumes to [IDF Deploy](https://github.com/lsst/idf_deploy).
 
 That still leaves the problem that a single user, who fills the volume that home directories are on, can prevent operation for everyone.
 
@@ -116,7 +126,7 @@ Individual-user quotas are the obvious mechanism to protect against that.
 
 There is another alternative--individual user home volumes.
 NetApp Volumes, with its Flex volume allocation and the Trident operator, would let us do that.
-That seems like overkill.
+That seems like overkill, although it would be using Trident more in the way it wants to be used.
 
 ### Default and multi-volume quota support
 
@@ -131,6 +141,8 @@ We believe that we can manage this by letting almost everyone use a default quot
 
 We can still have up to 99 users per volume who are special snowflakes with larger quotas.
 I think we have some candidates in mind.
+
+Our `idf_deploy` Terraform now supports default and individual quota rules on NetApp cloud volumes.
 
 ## Performance
 
