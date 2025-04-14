@@ -132,6 +132,12 @@ We believe that we can manage this by letting almost everyone use a default quot
 We can still have up to 99 users per volume who are special snowflakes with larger quotas.
 I think we have some candidates in mind.
 
+## Performance
+
+[PDF Export of Benchmarking Notebook](assets/compare.pdf)
+
+The tl;dr is that the NetApp implementation is a lot slower than Filestore, but that NetApp NFSv3 and NFSv4 are pretty close to one another in speed.
+
 ## Addendum
 
 See the [Documenteer documentation](https://documenteer.lsst.io/technotes/index.html) for tips on how to write and configure your new technote.
