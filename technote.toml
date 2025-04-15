@@ -9,9 +9,6 @@ organization.name = "Vera C. Rubin Observatory"
 organization.ror = "https://ror.org/048g3cy84"
 license.id = "CC-BY-4.0"
 
-[technote.status]
-state = "draft"
-
 [[technote.authors]]
 name.given = "Adam J."
 name.family = "Thornton"
