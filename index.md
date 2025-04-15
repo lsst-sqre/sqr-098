@@ -22,7 +22,7 @@ The output of the [IOZone](https:www.iozone.org) benchmarking tool can be found 
 
 Because the graphs are not just static plots, but rich [plotly](https://plotly.com) Javascript objects, rendering that notebook's output to static graphics has proven difficult.
 
-So I redid the tests with [fio](https://github.com/axboe/fio/) and the plots in Matplotlib, and that let me export the notebook as PDF much more easily.
+So I redid the tests with [fio](https://github.com/axboe/fio/) and the plots in Matplotlib, and that let me export the notebook as PDF much more easily.  That is attached to this document.
 
 ### Summary
 
@@ -82,14 +82,11 @@ It is somewhat fragile, although the Nublado Controller makes it far more reliab
 
 ### Trident
 
-The [Trident](https://docs.netapp.com/us-en/trident/index.html) operator might be able to help with this.
-In particular, [sharing NFS volumes across namespaces](https://docs.netapp.com/us-en/trident/trident-use/volume-share.html) looks fairly promising.
-It is obviously doing the same sort of PV-PVC pair management, but if it hides that from the administrator, such that all we have to do is create a PVC for the user mounts and annotate them with the fileserver namespace for each one we want to expose via the fileserver, then maybe that's a workable solution.
-
-I've done some experiments with Trident, and it really doesn't want to be used the way we want to use it.
-That said, I may still be able to hammer it into shape. 
-While initial volume creation takes a lot longer, its ability to mirror PVCs to other namespaces might offset this.
-As of yet I haven't been able to make it respect `no_root_squash`.
+The [Trident](https://docs.netapp.com/us-en/trident/index.html) operator looked promising, in particular, [sharing NFS volumes across namespaces](https://docs.netapp.com/us-en/trident/trident-use/volume-share.html).
+Trident does the same sort of PV-PVC pair management, but hides it from the administrator, which would be a nice win.
+However, it's got two problems that make it more trouble than it's worth.
+First, it's extremely aggressive about caching, and the only way I've found to be able to use it while experimenting with making large changes to its backend configuration is to uninstall and reinstall it.
+Second, it does not currently surface the NFS `no_root_squash` option, which we need for user provisioning; mounting a volume as NFSv3 sometimes to write on it as root and as Trident-managed NFSv4 introduces a deeply inelegant kludge.
 
 ### NFS v4 performance
 
@@ -127,6 +124,7 @@ Individual-user quotas are the obvious mechanism to protect against that.
 There is another alternative--individual user home volumes.
 NetApp Volumes, with its Flex volume allocation and the Trident operator, would let us do that.
 That seems like overkill, although it would be using Trident more in the way it wants to be used.
+Perhaps in future, when the product is more mature, this will seem more attractive.
 
 ### Default and multi-volume quota support
 
